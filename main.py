@@ -6,6 +6,7 @@ import argparse
 import pandas as pd
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+import json
 from googleapiclient.errors import HttpError
 
 location_url = lambda parent_id: f"https://drive.google.com/drive/folders/{parent_id}"
@@ -49,18 +50,13 @@ def main(credentials_file, drive, sheet, list_folders):
     logging.info(f"Found {len(files)} total files")
 
     for file in files:
-        # Create location url and remove parents key
-        location = location_url(file["parents"][0])
-        file["location"] = location
+        file["path"] = build_file_path(files, file["parents"][0])
+        file["location"] = location_url(file["parents"][0])
+        if file["path"] == "":
+            file["path"] = "/"
 
-        # Only build file paths for folders if we want to list them in output
-        if (list_folders and "folder" in file["mimeType"]) or "folder" not in file[
-            "mimeType"
-        ]:
-            file["path"] = build_file_path(files, file["parents"][0])
-
-        file["url"] = file.pop("webViewLink")
-        file["lastModifyingUser"] = file.pop("lastModifyingUser")["displayName"]
+        if "lastModifyingUser" in file:
+            file["lastModifyingUser"] = file.pop("lastModifyingUser")["displayName"]
 
     output_to_sheet(credentials, sheet, files, list_folders)
 
@@ -84,15 +80,24 @@ def output_to_sheet(credentials, sheet, files, list_folders):
 
     # Use pandas to build values for sheet (instead of manually formatting)
     df = pd.DataFrame(files)
+
+    # Build hyperlinks for name and path
+    df["name"] = '=HYPERLINK("' + df["webViewLink"] + '", "' + df["name"] + '")'
+    df["path"] = '=HYPERLINK("' + df["location"] + '", "' + df["path"] + '")'
+
     if not list_folders:
         df = df[df["mimeType"].str.contains("folder") == False]
-    df = df.drop(columns=["id", "parents", "mimeType"])
+
     df["createdTime"] = pd.to_datetime(df["createdTime"]).dt.strftime(
         "%Y-%m-%d %H:%M:%S"
     )
     df["modifiedTime"] = pd.to_datetime(df["modifiedTime"]).dt.strftime(
         "%Y-%m-%d %H:%M:%S"
     )
+
+    df = df.drop(columns=["id", "parents", "mimeType", "webViewLink", "location"])
+    df = df[["name", "createdTime", "modifiedTime", "lastModifyingUser", "path"]]
+    df = df.fillna("")
 
     values = [df.keys().tolist()]
     values.extend(df.values.tolist())
@@ -113,7 +118,7 @@ def output_to_sheet(credentials, sheet, files, list_folders):
             .values()
             .update(
                 spreadsheetId=sheet,
-                valueInputOption="RAW",
+                valueInputOption="USER_ENTERED",
                 range="A:ZZ",
                 body=body,
             )
