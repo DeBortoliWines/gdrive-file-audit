@@ -67,6 +67,9 @@ def output_to_sheet(credentials, sheet, files):
 
     # Use pandas to build values for sheet (instead of manually formatting)
     df = pd.DataFrame(files)
+    df["createdTime"] = pd.to_datetime(df["createdTime"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+    df["modifiedTime"] = pd.to_datetime(df["modifiedTime"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+
     values = [df.keys().tolist()]
     values.extend(df.values.tolist())
 
