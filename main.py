@@ -11,7 +11,7 @@ from googleapiclient.errors import HttpError
 location_url = lambda parent_id: f"https://drive.google.com/drive/folders/{parent_id}"
 
 
-def main(credentials_file, drive, sheet):
+def main(credentials_file, drive, sheet, list_folders):
     scopes = ["https://www.googleapis.com/auth/drive"]
     credentials = service_account.Credentials.from_service_account_file(
         credentials_file, scopes=scopes
@@ -23,7 +23,7 @@ def main(credentials_file, drive, sheet):
     kwargs = {
         "corpora": "drive",
         "driveId": drive,
-        "fields": "files(id, name, createdTime, modifiedTime, lastModifyingUser(displayName), webViewLink, parents), nextPageToken",
+        "fields": "files(id, mimeType, name, createdTime, modifiedTime, lastModifyingUser(displayName), webViewLink, parents), nextPageToken",
         "includeItemsFromAllDrives": True,
         "pageSize": 1000,
         "supportsAllDrives": True,
@@ -53,12 +53,16 @@ def main(credentials_file, drive, sheet):
         location = location_url(file["parents"][0])
         file["location"] = location
 
-        file["path"] = build_file_path(files, file["parents"][0])
+        # Only build file paths for folders if we want to list them in output
+        if (list_folders and "folder" in file["mimeType"]) or "folder" not in file[
+            "mimeType"
+        ]:
+            file["path"] = build_file_path(files, file["parents"][0])
 
         file["url"] = file.pop("webViewLink")
         file["lastModifyingUser"] = file.pop("lastModifyingUser")["displayName"]
 
-    output_to_sheet(credentials, sheet, files)
+    output_to_sheet(credentials, sheet, files, list_folders)
 
 
 def build_file_path(files, parent_id, path="", file_dict=None):
@@ -75,12 +79,14 @@ def build_file_path(files, parent_id, path="", file_dict=None):
     return build_file_path(files, parent_folder["parents"][0], path, file_dict)
 
 
-def output_to_sheet(credentials, sheet, files):
+def output_to_sheet(credentials, sheet, files, list_folders):
     service = build("sheets", "v4", credentials=credentials, cache_discovery=False)
 
     # Use pandas to build values for sheet (instead of manually formatting)
     df = pd.DataFrame(files)
-    df = df.drop(columns=["id", "parents"])
+    if not list_folders:
+        df = df[df["mimeType"].str.contains("folder") == False]
+    df = df.drop(columns=["id", "parents", "mimeType"])
     df["createdTime"] = pd.to_datetime(df["createdTime"]).dt.strftime(
         "%Y-%m-%d %H:%M:%S"
     )
@@ -141,6 +147,14 @@ if __name__ == "__main__":
         dest="logFile",
         default="/var/log/file_audit.log",
     )
+    parser.add_argument(
+        "-f",
+        "--folders",
+        help="List folders as well as files",
+        dest="listFolders",
+        action="store_true",
+        default=False,
+    )
 
     args = parser.parse_args()
 
@@ -153,7 +167,7 @@ if __name__ == "__main__":
 
     logging.info(f"Starting file audit on drive {args.drive}")
     start = time.time()
-    main(args.credentials, args.drive, args.sheet)
+    main(args.credentials, args.drive, args.sheet, args.listFolders)
     end = time.time()
     logging.info(
         f"File audit complete on drive {args.drive} in {round(end - start, 2)} seconds"
