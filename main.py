@@ -25,7 +25,7 @@ def main(credentials_file, drive, sheet):
     kwargs = {
         "corpora": "drive",
         "driveId": drive,
-        "fields": "files(name, createdTime, modifiedTime, webViewLink, parents), nextPageToken",
+        "fields": "files(name, createdTime, modifiedTime, webViewLink, parents, lastModifyingUser(displayName)), nextPageToken",
         "includeItemsFromAllDrives": True,
         "pageSize": 1000,
         "supportsAllDrives": True,
@@ -56,8 +56,8 @@ def main(credentials_file, drive, sheet):
         file["location"] = location
         del file["parents"]
 
-        # Rename webViewLink key
         file["url"] = file.pop("webViewLink")
+        file["lastModifyingUser"] = file.pop("lastModifyingUser")["displayName"]
 
     output_to_sheet(credentials, sheet, files)
 
