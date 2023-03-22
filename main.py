@@ -8,8 +8,6 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# TODO: Write function that builds filepaths, matching files parent ids with ids of folders
-
 location_url = lambda parent_id: f"https://drive.google.com/drive/folders/{parent_id}"
 
 
@@ -25,7 +23,7 @@ def main(credentials_file, drive, sheet):
     kwargs = {
         "corpora": "drive",
         "driveId": drive,
-        "fields": "files(name, createdTime, modifiedTime, webViewLink, parents, lastModifyingUser(displayName)), nextPageToken",
+        "fields": "files(id, name, createdTime, modifiedTime, lastModifyingUser(displayName), webViewLink, parents), nextPageToken",
         "includeItemsFromAllDrives": True,
         "pageSize": 1000,
         "supportsAllDrives": True,
@@ -54,7 +52,8 @@ def main(credentials_file, drive, sheet):
         # Create location url and remove parents key
         location = location_url(file["parents"][0])
         file["location"] = location
-        del file["parents"]
+
+        file["path"] = build_file_path(files, file["parents"][0])
 
         file["url"] = file.pop("webViewLink")
         file["lastModifyingUser"] = file.pop("lastModifyingUser")["displayName"]
@@ -62,13 +61,32 @@ def main(credentials_file, drive, sheet):
     output_to_sheet(credentials, sheet, files)
 
 
+def build_file_path(files, parent_id, path="", file_dict=None):
+    if file_dict is None:
+        # Create a dictionary to store the files by their IDs
+        file_dict = {file["id"]: file for file in files}
+
+    parent_folder = file_dict.get(parent_id)
+    if parent_folder is None:
+        return path
+
+    path = f"{parent_folder['name']}/{path}"
+
+    return build_file_path(files, parent_folder["parents"][0], path, file_dict)
+
+
 def output_to_sheet(credentials, sheet, files):
     service = build("sheets", "v4", credentials=credentials, cache_discovery=False)
 
     # Use pandas to build values for sheet (instead of manually formatting)
     df = pd.DataFrame(files)
-    df["createdTime"] = pd.to_datetime(df["createdTime"]).dt.strftime("%Y-%m-%d %H:%M:%S")
-    df["modifiedTime"] = pd.to_datetime(df["modifiedTime"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+    df = df.drop(columns=["id", "parents"])
+    df["createdTime"] = pd.to_datetime(df["createdTime"]).dt.strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    df["modifiedTime"] = pd.to_datetime(df["modifiedTime"]).dt.strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
     values = [df.keys().tolist()]
     values.extend(df.values.tolist())
