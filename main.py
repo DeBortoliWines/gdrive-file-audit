@@ -6,7 +6,6 @@ import argparse
 import pandas as pd
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import json
 from googleapiclient.errors import HttpError
 
 location_url = lambda parent_id: f"https://drive.google.com/drive/folders/{parent_id}"
@@ -37,6 +36,7 @@ def main(credentials_file, drive, sheet, list_folders):
             results = service.files().list(**kwargs).execute()
         except HttpError as e:
             logging.error(e)
+            raise
 
         files.extend(results["files"])
 
@@ -109,6 +109,7 @@ def output_to_sheet(credentials, sheet, files, list_folders):
         logging.info(f"Cleared sheet {sheet}")
     except HttpError as e:
         logging.error(e)
+        raise
 
     # Write new data to sheet
     body = {"values": values}
@@ -127,6 +128,7 @@ def output_to_sheet(credentials, sheet, files, list_folders):
         logging.info(f"Written {result.get('updatedCells')} cells to sheet {sheet}")
     except HttpError as e:
         logging.error(e)
+        raise
 
 
 if __name__ == "__main__":
