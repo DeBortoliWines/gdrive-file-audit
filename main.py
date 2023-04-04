@@ -16,7 +16,10 @@ def main(credentials_file, drive, sheet, list_folders, list_trashed):
     credentials = service_account.Credentials.from_service_account_file(
         credentials_file, scopes=scopes
     )
-    service = build("drive", "v3", credentials=credentials, cache_discovery=False)
+    drive_service = build("drive", "v3", credentials=credentials, cache_discovery=False)
+    sheets_service = build(
+        "sheets", "v4", credentials=credentials, cache_discovery=False
+    )
 
     # Define kwargs (key word arguments) for file search
     # Written this way to aviod defining parameters for file search twice due to pagination
@@ -37,7 +40,7 @@ def main(credentials_file, drive, sheet, list_folders, list_trashed):
     files = []
     while True:
         try:
-            results = service.files().list(**kwargs).execute()
+            results = drive_service.files().list(**kwargs).execute()
         except HttpError as e:
             logging.error(e)
             raise
@@ -62,7 +65,8 @@ def main(credentials_file, drive, sheet, list_folders, list_trashed):
         if "lastModifyingUser" in file:
             file["lastModifyingUser"] = file.pop("lastModifyingUser")["displayName"]
 
-    output_to_sheet(credentials, sheet, files, list_folders)
+    body = build_sheet_body(files, list_folders)
+    output_to_sheet(sheets_service, sheet, body)
 
 
 def build_file_path(files, parent_id, path="", file_dict=None):
@@ -79,9 +83,7 @@ def build_file_path(files, parent_id, path="", file_dict=None):
     return build_file_path(files, parent_folder["parents"][0], path, file_dict)
 
 
-def output_to_sheet(credentials, sheet, files, list_folders):
-    service = build("sheets", "v4", credentials=credentials, cache_discovery=False)
-
+def build_sheet_body(files, list_folders):
     # Use pandas to build values for sheet (instead of manually formatting)
     df = pd.DataFrame(files)
 
@@ -93,18 +95,14 @@ def output_to_sheet(credentials, sheet, files, list_folders):
         df = df[df["mimeType"].str.contains("folder") == False]
 
     col_order = ["name", "createdTime", "modifiedTime", "lastModifyingUser", "path"]
+    time_cols = ["createdTime", "modifiedTime"]
+
     if "trashedTime" in df:
         col_order.append("trashedTime")
-        df["trashedTime"] = pd.to_datetime(df["trashedTime"]).dt.strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        time_cols.append("trashedTime")
 
-    df["createdTime"] = pd.to_datetime(df["createdTime"]).dt.strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-    df["modifiedTime"] = pd.to_datetime(df["modifiedTime"]).dt.strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+    for time_col in time_cols:
+        df[time_col] = pd.to_datetime(df[time_col]).dt.strftime("%Y-%m-%d %H:%M:%S")
 
     df = df[col_order]
     df = df.fillna("")
@@ -112,8 +110,15 @@ def output_to_sheet(credentials, sheet, files, list_folders):
     values = [df.keys().tolist()]
     values.extend(df.values.tolist())
 
+    # Write new data to sheet
+    body = {"values": values}
+
+    return body
+
+
+def output_to_sheet(sheets_service, sheet, body):
     try:
-        service.spreadsheets().values().clear(
+        sheets_service.spreadsheets().values().clear(
             spreadsheetId=sheet, range="A:ZZ"
         ).execute()
         logging.info(f"Cleared sheet {sheet}")
@@ -121,11 +126,9 @@ def output_to_sheet(credentials, sheet, files, list_folders):
         logging.error(e)
         raise
 
-    # Write new data to sheet
-    body = {"values": values}
     try:
         result = (
-            service.spreadsheets()
+            sheets_service.spreadsheets()
             .values()
             .update(
                 spreadsheetId=sheet,
