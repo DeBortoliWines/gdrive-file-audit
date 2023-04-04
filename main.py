@@ -11,7 +11,9 @@ from googleapiclient.errors import HttpError
 location_url = lambda parent_id: f"https://drive.google.com/drive/folders/{parent_id}"
 
 
-def main(credentials_file, drive, sheet, list_folders, list_trashed):
+def main(
+    credentials_file, drive_id, spreadsheet_id, list_folders, list_trashed, sheet_output
+):
     scopes = ["https://www.googleapis.com/auth/drive"]
     credentials = service_account.Credentials.from_service_account_file(
         credentials_file, scopes=scopes
@@ -25,7 +27,7 @@ def main(credentials_file, drive, sheet, list_folders, list_trashed):
     # Written this way to aviod defining parameters for file search twice due to pagination
     kwargs = {
         "corpora": "drive",
-        "driveId": drive,
+        "driveId": drive_id,
         "fields": "files(id, mimeType, name, createdTime, modifiedTime, lastModifyingUser(displayName), trashedTime, webViewLink, parents), nextPageToken",
         "includeItemsFromAllDrives": True,
         "pageSize": 1000,
@@ -65,8 +67,13 @@ def main(credentials_file, drive, sheet, list_folders, list_trashed):
         if "lastModifyingUser" in file:
             file["lastModifyingUser"] = file.pop("lastModifyingUser")["displayName"]
 
+    sheet_name = None
+    if sheet_output:
+        sheet_name = create_sheet(
+            drive_service, sheets_service, drive_id, spreadsheet_id
+        )
     body = build_sheet_body(files, list_folders)
-    output_to_sheet(sheets_service, sheet, body)
+    output_to_sheet(sheets_service, spreadsheet_id, body, sheet_name)
 
 
 def build_file_path(files, parent_id, path="", file_dict=None):
@@ -81,6 +88,33 @@ def build_file_path(files, parent_id, path="", file_dict=None):
     path = f"{parent_folder['name']}/{path}"
 
     return build_file_path(files, parent_folder["parents"][0], path, file_dict)
+
+
+def create_sheet(drive_service, sheets_service, drive_id, spreadsheet_id):
+    try:
+        drive = drive_service.drives().get(driveId=drive_id).execute()
+        spreadsheet = (
+            sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        )
+    except HttpError as e:
+        logging.error(e)
+        raise
+
+    drive_name = drive["name"]
+    sheets = spreadsheet["sheets"]
+    sheet_names = [sheet["properties"]["title"] for sheet in sheets]
+
+    if drive_name not in sheet_names:
+        request = {"addSheet": {"properties": {"title": drive_name}}}
+        try:
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id, body={"requests": [request]}
+            ).execute()
+        except HttpError as e:
+            logging.error(e)
+            raise
+
+    return drive_name
 
 
 def build_sheet_body(files, list_folders):
@@ -116,12 +150,16 @@ def build_sheet_body(files, list_folders):
     return body
 
 
-def output_to_sheet(sheets_service, sheet, body):
+def output_to_sheet(sheets_service, spreadsheet_id, body, sheet_name):
+    range = "A:ZZ"
+    if sheet_name != None:
+        range = f"'{sheet_name}'!{range}"
+
     try:
         sheets_service.spreadsheets().values().clear(
-            spreadsheetId=sheet, range="A:ZZ"
+            spreadsheetId=spreadsheet_id, range=range
         ).execute()
-        logging.info(f"Cleared sheet {sheet}")
+        logging.info(f"Cleared sheet {spreadsheet_id}")
     except HttpError as e:
         logging.error(e)
         raise
@@ -131,14 +169,16 @@ def output_to_sheet(sheets_service, sheet, body):
             sheets_service.spreadsheets()
             .values()
             .update(
-                spreadsheetId=sheet,
+                spreadsheetId=spreadsheet_id,
                 valueInputOption="USER_ENTERED",
-                range="A:ZZ",
+                range=range,
                 body=body,
             )
             .execute()
         )
-        logging.info(f"Written {result.get('updatedCells')} cells to sheet {sheet}")
+        logging.info(
+            f"Written {result.get('updatedCells')} cells to sheet {spreadsheet_id}"
+        )
     except HttpError as e:
         logging.error(e)
         raise
@@ -183,6 +223,14 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "-s",
+        "--sheet",
+        help="Output to separate sheet in spreadsheet",
+        dest="sheetOutput",
+        action="store_true",
+        default=False,
+    )
 
     args = parser.parse_args()
 
@@ -195,7 +243,14 @@ if __name__ == "__main__":
 
     logging.info(f"Starting file audit on drive {args.drive}")
     start = time.time()
-    main(args.credentials, args.drive, args.sheet, args.listFolders, args.listTrashed)
+    main(
+        args.credentials,
+        args.drive,
+        args.sheet,
+        args.listFolders,
+        args.listTrashed,
+        args.sheetOutput,
+    )
     end = time.time()
     logging.info(
         f"File audit complete on drive {args.drive} in {round(end - start, 2)} seconds"
