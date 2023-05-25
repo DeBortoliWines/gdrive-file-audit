@@ -12,7 +12,7 @@ location_url = lambda parent_id: f"https://drive.google.com/drive/folders/{paren
 
 
 def main(
-    credentials_file, drive_id, spreadsheet_id, list_folders, list_trashed, sheet_output
+    credentials_file, drive_id, spreadsheet_id, list_folders, list_trashed, sheet_output, rootFolder
 ):
     scopes = ["https://www.googleapis.com/auth/drive"]
     credentials = service_account.Credentials.from_service_account_file(
@@ -68,13 +68,19 @@ def main(
             file["lastModifyingUser"] = file.pop("lastModifyingUser")["displayName"]
 
     sheet_name = None
+    root_folder_name = get_folder_name(files, rootFolder)
     if sheet_output:
         sheet_name = create_sheet(
-            drive_service, sheets_service, drive_id, spreadsheet_id
+            drive_service, sheets_service, drive_id, spreadsheet_id, root_folder_name
         )
-    body = build_sheet_body(files, list_folders)
+    body = build_sheet_body(files, list_folders, root_folder_name)
     output_to_sheet(sheets_service, spreadsheet_id, body, sheet_name)
 
+def get_folder_name(files, folder_id):
+    file_dict = {file["id"]: file for file in files}
+    folder = file_dict.get(folder_id)
+
+    return folder["name"] if folder is not None else None
 
 def build_file_path(files, parent_id, path="", file_dict=None):
     if file_dict is None:
@@ -90,7 +96,7 @@ def build_file_path(files, parent_id, path="", file_dict=None):
     return build_file_path(files, parent_folder["parents"][0], path, file_dict)
 
 
-def create_sheet(drive_service, sheets_service, drive_id, spreadsheet_id):
+def create_sheet(drive_service, sheets_service, drive_id, spreadsheet_id, root_folder_name):
     try:
         drive = drive_service.drives().get(driveId=drive_id).execute()
         spreadsheet = (
@@ -101,6 +107,8 @@ def create_sheet(drive_service, sheets_service, drive_id, spreadsheet_id):
         raise
 
     drive_name = drive["name"]
+    if root_folder_name:
+        drive_name += f"/{root_folder_name}"
     sheets = spreadsheet["sheets"]
     sheet_names = [sheet["properties"]["title"] for sheet in sheets]
 
@@ -117,9 +125,12 @@ def create_sheet(drive_service, sheets_service, drive_id, spreadsheet_id):
     return drive_name
 
 
-def build_sheet_body(files, list_folders):
+def build_sheet_body(files, list_folders, root_folder_name):
     # Use pandas to build values for sheet (instead of manually formatting)
     df = pd.DataFrame(files)
+
+    if root_folder_name is not None:
+        df = df.loc[df["path"].str.startswith(root_folder_name)]
 
     # Build hyperlinks for name and path
     df["name"] = '=HYPERLINK("' + df["webViewLink"] + '", "' + df["name"] + '")'
@@ -231,6 +242,12 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "-r",
+        "--root",
+        help="Specify root folder for output",
+        dest="rootFolder",
+    )
 
     args = parser.parse_args()
 
@@ -250,6 +267,7 @@ if __name__ == "__main__":
         args.listFolders,
         args.listTrashed,
         args.sheetOutput,
+        args.rootFolder,
     )
     end = time.time()
     logging.info(
