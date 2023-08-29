@@ -67,6 +67,11 @@ def main(
         if "lastModifyingUser" in file:
             file["lastModifyingUser"] = file.pop("lastModifyingUser")["displayName"]
 
+        if "mimeType" != "application/vnd.google-apps.folder":
+            file["nameFailedCheck"] = validate_file_name(file)
+        else:
+            file["nameFailedCheck"] = ""
+
     sheet_name = None
     root_folder_name = get_folder_name(files, rootFolder)
     if sheet_output:
@@ -75,6 +80,28 @@ def main(
         )
     body = build_sheet_body(files, list_folders, root_folder_name)
     output_to_sheet(sheets_service, spreadsheet_id, body, sheet_name)
+
+def validate_file_name(file):
+    special_characters = '@!#$%^*<>?/\|}{~:'
+    failures = []
+    name = file['name']
+
+    # List of dicts to store validation conditions
+    conditions = [
+        { 'cond': len(name) <= 8, 'val': 'name too short'},
+        { 'cond': any(char in special_characters for char in name), 'val': 'contains invalid characters'},
+        { 'cond': (name[0] in ' _-' or name[-1] == ' _-'), 'val': 'leading or trailing spaces or dashes'},
+        { 'cond': 'untitled' in name.lower(), 'val': 'unnamed document'},
+    ]
+
+
+    # Iterate over condition list, append val to failures list if applicable
+    for condition in conditions:
+        if  condition['cond']:
+            failures.append(condition['val'])
+
+    failure_string = " | ".join(failures)
+    return failure_string
 
 def get_folder_name(files, folder_id):
     file_dict = {file["id"]: file for file in files}
@@ -139,7 +166,7 @@ def build_sheet_body(files, list_folders, root_folder_name):
     if not list_folders:
         df = df[df["mimeType"].str.contains("folder") == False]
 
-    col_order = ["name", "createdTime", "modifiedTime", "lastModifyingUser", "path"]
+    col_order = ["name", "createdTime", "modifiedTime", "lastModifyingUser", "path",  "nameFailedCheck"]
     time_cols = ["createdTime", "modifiedTime"]
 
     if "trashedTime" in df:
