@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
-import time
-import logging
 import argparse
+import logging
+import re
+import time
+
 import pandas as pd
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -12,7 +14,13 @@ location_url = lambda parent_id: f"https://drive.google.com/drive/folders/{paren
 
 
 def main(
-    credentials_file, drive_id, spreadsheet_id, list_folders, list_trashed, sheet_output, rootFolder
+    credentials_file,
+    drive_id,
+    spreadsheet_id,
+    list_folders,
+    list_trashed,
+    sheet_output,
+    rootFolder,
 ):
     scopes = ["https://www.googleapis.com/auth/drive"]
     credentials = service_account.Credentials.from_service_account_file(
@@ -67,7 +75,7 @@ def main(
         if "lastModifyingUser" in file:
             file["lastModifyingUser"] = file.pop("lastModifyingUser")["displayName"]
 
-        if "mimeType" != "application/vnd.google-apps.folder":
+        if file["mimeType"] != "application/vnd.google-apps.folder":
             file["nameFailedCheck"] = validate_file_name(file)
         else:
             file["nameFailedCheck"] = ""
@@ -81,33 +89,48 @@ def main(
     body = build_sheet_body(files, list_folders, root_folder_name)
     output_to_sheet(sheets_service, spreadsheet_id, body, sheet_name)
 
+
 def validate_file_name(file):
-    special_characters = '@!#$%^*<>?/\|}{~:'
+    special_characters = '^*<>/\|}{~:?"'
+    # Pattern matches string with only digits and/or special characters we allow.
+    # Some special chars need to be escaped because regex
+    regex_pattern = f"^[0-9\.@$\(\)\[\]%&\-_]+$"
     failures = []
-    name = file['name']
+    name = file["name"]
 
     # List of dicts to store validation conditions
     conditions = [
-        { 'cond': len(name) <= 8, 'val': 'name too short'},
-        { 'cond': any(char in special_characters for char in name), 'val': 'contains invalid characters'},
-        { 'cond': (name[0] in ' _-' or name[-1] == ' _-'), 'val': 'leading or trailing spaces or dashes'},
-        { 'cond': 'untitled' in name.lower(), 'val': 'unnamed document'},
+        {"cond": len(name) <= 8, "val": "name too short"},
+        {
+            "cond": any(char in special_characters for char in name),
+            "val": "contains invalid characters",
+        },
+        {
+            "cond": (name[0] in " _-" or name[-1] == " _-"),
+            "val": "leading or trailing spaces or dashes",
+        },
+        {"cond": "untitled" in name.lower(), "val": "unnamed document"},
+        {
+            "cond": re.match(regex_pattern, name.rsplit(".", 1)[0]),
+            "val": "name may not contain words",
+        },
     ]
-
 
     # Iterate over condition list, append val to failures list if applicable
     for condition in conditions:
-        if  condition['cond']:
-            failures.append(condition['val'])
+        if condition["cond"]:
+            failures.append(condition["val"])
 
     failure_string = " | ".join(failures)
     return failure_string
+
 
 def get_folder_name(files, folder_id):
     file_dict = {file["id"]: file for file in files}
     folder = file_dict.get(folder_id)
 
     return folder["name"] if folder is not None else None
+
 
 def build_file_path(files, parent_id, path="", file_dict=None):
     if file_dict is None:
@@ -123,7 +146,9 @@ def build_file_path(files, parent_id, path="", file_dict=None):
     return build_file_path(files, parent_folder["parents"][0], path, file_dict)
 
 
-def create_sheet(drive_service, sheets_service, drive_id, spreadsheet_id, root_folder_name):
+def create_sheet(
+    drive_service, sheets_service, drive_id, spreadsheet_id, root_folder_name
+):
     try:
         drive = drive_service.drives().get(driveId=drive_id).execute()
         spreadsheet = (
@@ -164,9 +189,16 @@ def build_sheet_body(files, list_folders, root_folder_name):
     df["path"] = '=HYPERLINK("' + df["location"] + '", "' + df["path"] + '")'
 
     if not list_folders:
-        df = df[df["mimeType"].str.contains("folder") == False]
+        df = df[~df["mimeType"].str.contains("folder", case=False)]
 
-    col_order = ["name", "createdTime", "modifiedTime", "lastModifyingUser", "path",  "nameFailedCheck"]
+    col_order = [
+        "name",
+        "createdTime",
+        "modifiedTime",
+        "lastModifyingUser",
+        "path",
+        "nameFailedCheck",
+    ]
     time_cols = ["createdTime", "modifiedTime"]
 
     if "trashedTime" in df:
@@ -190,7 +222,7 @@ def build_sheet_body(files, list_folders, root_folder_name):
 
 def output_to_sheet(sheets_service, spreadsheet_id, body, sheet_name):
     range = "A:ZZ"
-    if sheet_name != None:
+    if sheet_name is not None:
         range = f"'{sheet_name}'!{range}"
 
     try:
